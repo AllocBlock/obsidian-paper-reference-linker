@@ -6,23 +6,23 @@ import { assert } from 'console';
 // TODO: update ref immediately after getting meta, for breakpoint restart
 
 // Remember to rename these classes and interfaces!
-interface MyPluginSettings {
-    mySetting: string;
-}
+// interface LinkerPluginSettings {
+//     mySetting: string;
+// }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-    mySetting: 'default'
-}
+// const DEFAULT_SETTINGS: LinkerPluginSettings = {
+//     mySetting: 'default'
+// }
 
 const ReMetaHeader = /# [Mm]eta\s+((.*:.*\n)*)/
 
-export default class MyPlugin extends Plugin {
-    settings: MyPluginSettings;
+export default class LinkerPlugin extends Plugin {
+    // settings: LinkerPluginSettings;
     statusBar: HTMLElement;
     isProcessing: boolean;
 
     async onload() {
-        await this.loadSettings();
+        // await this.loadSettings();
         this.isProcessing = false;
 
         this.statusBar = this.addStatusBarItem();
@@ -37,20 +37,20 @@ export default class MyPlugin extends Plugin {
         });
 
         // This adds a settings tab so the user can configure various aspects of the plugin
-        // this.addSettingTab(new SampleSettingTab(this.app, this));
+        // this.addSettingTab(new LinkerSettingTab(this.app, this));
     }
 
     onunload() {
 
     }
 
-    async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    }
+    // async loadSettings() {
+    //     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // }
 
-    async saveSettings() {
-        await this.saveData(this.settings);
-    }
+    // async saveSettings() {
+    //     await this.saveData(this.settings);
+    // }
 
     extractMetaData(text: string) : Map<string, string>{
         let meta = new Map<string, string>()
@@ -197,7 +197,7 @@ export default class MyPlugin extends Plugin {
     }
 }
 
-// class SampleSettingTab extends PluginSettingTab {
+// class LinkerSettingTab extends PluginSettingTab {
 //     plugin: MyPlugin;
 
 //     constructor(app: App, plugin: MyPlugin) {
