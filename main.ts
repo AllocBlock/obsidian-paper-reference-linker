@@ -29,15 +29,12 @@ export default class MyPlugin extends Plugin {
 		this.statusBar.setText('');
 
         // This creates an icon in the left ribbon.
-        const ribbonIconEl = this.addRibbonIcon('dice', 'Gen Paper Links', (evt: MouseEvent) => {
+        this.addRibbonIcon('dice', 'Gen Paper Links', (evt: MouseEvent) => {
             if (!this.isProcessing)
                 this.generateLinks()
             else
                 new Notice("已经在生成中...进度可查看右下角状态栏")
         });
-        
-        // Perform additional things with the ribbon
-        // ribbonIconEl.addClass('my-plugin-ribbon-class');
 
         // This adds a settings tab so the user can configure various aspects of the plugin
         // this.addSettingTab(new SampleSettingTab(this.app, this));
@@ -93,7 +90,6 @@ export default class MyPlugin extends Plugin {
                 refsPerPaper.push(refs)
             }
         }
-        // console.log(refsPerPaper)
 
         // calculate in-vault references
         this.setStatusBarText(`计算引用...`)
@@ -108,7 +104,7 @@ export default class MyPlugin extends Plugin {
             }
             inVaultRefsPerPaper.push(inVaultRef)
         }
-        // console.log(inVaultRefsPerPaper) 
+
         return {
             refs: refsPerPaper, 
             inVaultRefs: inVaultRefsPerPaper
@@ -136,11 +132,9 @@ export default class MyPlugin extends Plugin {
             if (matchMetaHeader) {
                 let insertIndex = matchMetaHeader.index ?? 0
                 let length = matchMetaHeader[0].length
-                // console.log(text)
                 beforePart = text.substring(0, insertIndex)
                 afterPart = text.substring(insertIndex + length)
             }
-            // console.log(beforePart, afterPart)
 
             // generate new meta header
             let metaHeader = "# Meta\n"
@@ -183,7 +177,6 @@ export default class MyPlugin extends Plugin {
                 inFileRefs = refStr?.split(",").map(s => s.trim()) ?? []
             }
 
-            // console.log(file, doi);
             targetFiles.push(file)
 
             dois.push(doi)
