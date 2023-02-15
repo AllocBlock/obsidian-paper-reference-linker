@@ -1,34 +1,38 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
-// import CrossRef from 'crossref'; // crossref npm package has bad support and cant find deprecated request pack
+import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import CrossRef from 'crossref';
-import { assert } from 'console';
 
 // TODO: update ref immediately after getting meta, for breakpoint restart
 
-// Remember to rename these classes and interfaces!
-// interface LinkerPluginSettings {
-//     mySetting: string;
-// }
+interface LinkerPluginSettings {
+    saveYear: boolean;
+}
 
-// const DEFAULT_SETTINGS: LinkerPluginSettings = {
-//     mySetting: 'default'
-// }
+const DEFAULT_SETTINGS: LinkerPluginSettings = {
+    saveYear: true
+}
 
 const ReMetaHeader = /# [Mm]eta\s+((.*:.*\n)*)/
 
+interface PaperInfo {
+    file: TFile;
+    doi: string;
+    refs: Array<string>; // actual paper references
+    links: Array<PaperInfo>; // in vault links
+    extraMeta: Map<string, string>;
+}
+
 export default class LinkerPlugin extends Plugin {
-    // settings: LinkerPluginSettings;
+    settings: LinkerPluginSettings;
     statusBar: HTMLElement;
     isProcessing: boolean;
 
     async onload() {
-        // await this.loadSettings();
-        this.isProcessing = false;
+        await this.loadSettings();
 
+        this.isProcessing = false;
         this.statusBar = this.addStatusBarItem();
 		this.statusBar.setText('');
 
-        // This creates an icon in the left ribbon.
         this.addRibbonIcon('dice', 'Gen Paper Links', (evt: MouseEvent) => {
             if (!this.isProcessing)
                 this.generateLinks()
@@ -36,23 +40,22 @@ export default class LinkerPlugin extends Plugin {
                 new Notice("已经在生成中...进度可查看右下角状态栏")
         });
 
-        // This adds a settings tab so the user can configure various aspects of the plugin
-        // this.addSettingTab(new LinkerSettingTab(this.app, this));
+        this.addSettingTab(new LinkerSettingTab(this.app, this));
     }
 
     onunload() {
 
     }
 
-    // async loadSettings() {
-    //     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    // }
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
 
-    // async saveSettings() {
-    //     await this.saveData(this.settings);
-    // }
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
 
-    extractMetaData(text: string) : Map<string, string>{
+    extractMetaData(text: string) : Map<string, string> {
         let meta = new Map<string, string>()
         let metaMatchRes = text.match(ReMetaHeader)
         if (!metaMatchRes) return meta;
@@ -68,62 +71,126 @@ export default class LinkerPlugin extends Plugin {
         return meta;
     }
 
-    async calcReferences(dois : Array<string>, inFileRefs : Array<Array<string>>) {
-        // get references
-        let refsPerPaper = []
-        for (let i = 0; i < dois.length; ++i) {
-            this.setStatusBarText(`获取参考文献 ${i+1}/${dois.length}`)
-            if (inFileRefs[i].length > 0) {
-                refsPerPaper.push(inFileRefs[i])
+    async getPaperInfos() : Promise<Array<PaperInfo>> {
+        const vault = this.app.vault
+        const files = vault.getMarkdownFiles()
+        
+        let paperInfos : Array<PaperInfo> = []
+        for (let i = 0; i < files.length; ++i) {
+            let file = files[i]
+            this.setStatusBarText(`搜索文件 ${i+1}/${files.length}`)
+
+            let text = await vault.read(file);
+            let meta = this.extractMetaData(text)
+            if (!meta.has("doi")) continue;
+
+            let doi = meta.get("doi") ?? ""
+
+            let refs : Array<string> = []
+            if (meta.has("refs")) {
+                let refStr = meta.get("refs")?.trim()
+                if (refStr)
+                    refs = refStr?.split(",").map(s => s.trim()) ?? []
+                else
+                    refs = []
             }
-            else {
-                let meta = await CrossRef.work(dois[i])
+
+            let paperInfo : PaperInfo = {
+                file: file,
+                doi: doi,
+                refs: refs,
+                links: [],
+                extraMeta: meta
+            }
+
+            paperInfos.push(paperInfo)
+        }
+
+        return paperInfos;
+    }
+
+    shouldGetRefOnInternet(paperInfo : PaperInfo) : boolean {
+        if (paperInfo.refs.length == 0) return true;
+        else if (this.settings.saveYear && !paperInfo.extraMeta.has("year")) return true;
+        return false;
+    }
+
+    async calcReferences(paperInfos : Array<PaperInfo>) : Promise<void> {
+        // get references on internet if not found in file
+        for (let i = 0; i < paperInfos.length; ++i) {
+            let info = paperInfos[i]
+            this.setStatusBarText(`获取参考文献 ${i+1}/${paperInfos.length}`)
+
+            if (this.shouldGetRefOnInternet(info)) {
+                let meta = await CrossRef.work(info.doi)
                 // TODO: what if this paper is not found?
                 // FIXME: what to do with no doi paper?
-                let refs = []
-                if (meta && meta.message.reference) {
-                    for (let ref of meta.message.reference) {
-                        if (ref.DOI)
-                            refs.push(ref.DOI)
+                if (meta) {
+                    if (meta.message.reference) {
+                        for (let ref of meta.message.reference) {
+                            if (ref.DOI && ref.DOI.trim())
+                                info.refs.push(ref.DOI.trim())
+                        }
+                    }
+                    
+                    if (this.settings.saveYear && meta.message?.['published-print']?.['date-parts']?.[0]?.[0]) {
+                        info.extraMeta.set("year", meta.message['published-print']['date-parts'][0][0])
                     }
                 }
-                refsPerPaper.push(refs)
             }
         }
 
         // calculate in-vault references
         this.setStatusBarText(`计算引用...`)
-        let inVaultDoi = new Set<string>(dois)
-        let inVaultRefsPerPaper = []
-        for (let refs of refsPerPaper) {
-            let inVaultRef = []
-            for (let doi of refs) {
-                if (inVaultDoi.has(doi)) {
-                    inVaultRef.push(doi)
-                }
+        let doiMap = new Map<string, PaperInfo>()
+        for (let info of paperInfos) {
+            if (doiMap.has(info.doi)) {
+                let existedInfo = doiMap.get(info.doi)
+                if (existedInfo)
+                    new Notice(`警告：${info.file.basename}中的doi与${existedInfo.file.basename}的doi相同！`)
             }
-            inVaultRefsPerPaper.push(inVaultRef)
+            else {
+                doiMap.set(info.doi, info)
+            }
         }
 
-        return {
-            refs: refsPerPaper, 
-            inVaultRefs: inVaultRefsPerPaper
+        for (let info of paperInfos) {
+            for (let doi of info.refs) {
+                if (doiMap.has(doi)) {
+                    let linkInfo = doiMap.get(doi)
+                    if (linkInfo)
+                        info.links.push(linkInfo)
+                }
+            }
         }
     }
 
-    async updateMetaHeaders(
-        files : Array<TFile>,
-        dois : Array<string>,
-        refs : Array<Array<string>>, 
-        inVaultRefs : Array<Array<string>>
-    ) {
-        assert(files.length == dois.length)
-        assert(files.length == refs.length)
-        assert(files.length == inVaultRefs.length)
+    generateMetaHeader(paperInfo : PaperInfo) : string {
+        let metaHeader = "# Meta\n"
+        metaHeader += `doi: ${paperInfo.doi}\n`
 
+        if (this.settings.saveYear && paperInfo.extraMeta.has("year")) {
+            let year = paperInfo.extraMeta.get("year")
+            metaHeader += `year: ${year}\n`
+        }
+
+        if (paperInfo.refs.length > 0)
+            metaHeader += `refs: ${paperInfo.refs.join(", ")}\n`
+        
+        if (paperInfo.links.length > 0) {
+            let links = paperInfo.links.map((info: PaperInfo) => {
+                return `[[${info.file.basename}]]`
+            })
+            metaHeader += `links: ${links.join(" ")}\n`
+        }
+
+        return metaHeader
+    }
+
+    async updateMetaHeaders(paperInfos : Array<PaperInfo>) : Promise<void> {
         const vault = this.app.vault
-        for (let i = 0; i < files.length; ++i) {
-            let text = await vault.read(files[i]);
+        for (let info of paperInfos) {
+            let text = await vault.read(info.file);
 
             // remove original meta header
             let beforePart = "" // default append at start
@@ -137,59 +204,30 @@ export default class LinkerPlugin extends Plugin {
             }
 
             // generate new meta header
-            let metaHeader = "# Meta\n"
-            metaHeader += `doi: ${dois[i]}\n`
-            metaHeader += `refs: ${refs[i].join(", ")}\n`
-            let links = inVaultRefs[i].map((doi: string) => {
-                let file = files[dois.indexOf(doi)]
-                return `[[${file.basename}]]`
-            })
-            metaHeader += `links: ${links.join(" ")}\n`
+            let metaHeader = this.generateMetaHeader(info)
+            console.log(metaHeader)
             
             // append meta header
             let newText = beforePart + metaHeader + afterPart
 
             // save data
-            vault.modify(files[i], newText)
+            vault.modify(info.file, newText) 
         }
     }
 
-    async generateLinks() {
-        const vault = this.app.vault
-        const files = vault.getMarkdownFiles()
-        
-        let targetFiles : Array<TFile> = []
-        let dois : Array<string> = [] 
-        let inFileRefsPerPaper : Array<Array<string>> = []
-        for (let i = 0; i < files.length; ++i) {
-            this.setStatusBarText(`搜索文件 ${i+1}/${files.length}`)
-            let file = files[i]
-
-            let text = await vault.read(file);
-            let meta = this.extractMetaData(text)
-            if (!meta.has("doi")) continue;
-
-            let doi = meta.get("doi") ?? ""
-
-            let inFileRefs : Array<string> = []
-            if (meta.has("refs")) {
-                let refStr = meta.get("refs")?.trim()
-                inFileRefs = refStr?.split(",").map(s => s.trim()) ?? []
-            }
-
-            targetFiles.push(file)
-
-            dois.push(doi)
-            inFileRefsPerPaper.push(inFileRefs)
-        }
+    async generateLinks() : Promise<void> {
+        console.log("start generation")
+        let paperInfos : Array<PaperInfo> = await this.getPaperInfos()
         
         this.setStatusBarText("生成引用...")
-        let refInfo = await this.calcReferences(dois, inFileRefsPerPaper)
+        await this.calcReferences(paperInfos)
         this.setStatusBarText("更新文件中的引用...")
-        await this.updateMetaHeaders(targetFiles, dois, refInfo.refs, refInfo.inVaultRefs)
+        await this.updateMetaHeaders(paperInfos)
         this.setStatusBarText("")
 
-        new Notice(`引用生成完成！共统计了${targetFiles.length}篇文章。`);
+        console.log(paperInfos)
+
+        new Notice(`引用生成完成！共统计了${paperInfos.length}篇文章。`);
     }
 
     setStatusBarText(text : string) {
@@ -197,31 +235,28 @@ export default class LinkerPlugin extends Plugin {
     }
 }
 
-// class LinkerSettingTab extends PluginSettingTab {
-//     plugin: MyPlugin;
+class LinkerSettingTab extends PluginSettingTab {
+    plugin: LinkerPlugin;
 
-//     constructor(app: App, plugin: MyPlugin) {
-//         super(app, plugin);
-//         this.plugin = plugin;
-//     }
+    constructor(app: App, plugin: LinkerPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
 
-//     display(): void {
-//         const {containerEl} = this;
+    display(): void {
+        const {containerEl} = this;
 
-//         containerEl.empty();
+        containerEl.empty();
 
-//         containerEl.createEl('h2', {text: 'Settings for my awesome plugin.'});
+        containerEl.createEl('h2', {text: '保存选项'});
 
-//         new Setting(containerEl)
-//             .setName('Setting #1')
-//             .setDesc('It\'s a secret')
-//             .addText(text => text
-//                 .setPlaceholder('Enter your secret')
-//                 .setValue(this.plugin.settings.mySetting)
-//                 .onChange(async (value) => {
-//                     console.log('Secret: ' + value);
-//                     this.plugin.settings.mySetting = value;
-//                     await this.plugin.saveSettings();
-//                 }));
-//     }
-// }
+        new Setting(containerEl)
+            .setName('年份')
+            .addToggle(comp => comp
+                .setValue(this.plugin.settings.saveYear)
+                .onChange(async (value) => {
+                    this.plugin.settings.saveYear = value;
+                    await this.plugin.saveSettings();
+                }));
+    }
+}
