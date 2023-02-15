@@ -1,6 +1,7 @@
 # Obsidian Paper Reference Linker
 ## Introduction
-- create link between paper notes
+- create link between paper notes by finding references on internet
+- based on crossref's api
   
 ## Usage
 - Add meta header to all paper notess you want
