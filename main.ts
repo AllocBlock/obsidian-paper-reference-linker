@@ -16,6 +16,7 @@ const ReMetaHeader = /# [Mm]eta\s+((.*:.*\n)*)/
 interface PaperInfo {
     file: TFile;
     doi: string;
+    year: number | null;
     refs: Array<string>; // actual paper references
     links: Array<PaperInfo>; // in vault links
     extraMeta: Map<string, string>;
@@ -34,8 +35,10 @@ export default class LinkerPlugin extends Plugin {
 		this.statusBar.setText('');
 
         this.addRibbonIcon('dice', 'Gen Paper Links', (evt: MouseEvent) => {
-            if (!this.isProcessing)
+            if (!this.isProcessing) {
+                this.isProcessing = true
                 this.generateLinks()
+            }
             else
                 new Notice("已经在生成中...进度可查看右下角状态栏")
         });
@@ -98,6 +101,7 @@ export default class LinkerPlugin extends Plugin {
             let paperInfo : PaperInfo = {
                 file: file,
                 doi: doi,
+                year: null,
                 refs: refs,
                 links: [],
                 extraMeta: meta
