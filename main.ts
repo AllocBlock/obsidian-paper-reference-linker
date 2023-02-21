@@ -1,35 +1,23 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 import CrossRef from 'crossref';
 
-// TODO: update ref immediately after getting meta, for breakpoint restart
-
-interface LinkerPluginSettings {
-    saveYear: boolean;
-}
-
-const DEFAULT_SETTINGS: LinkerPluginSettings = {
-    saveYear: true
-}
-
-const ReMetaHeader = /# [Mm]eta\s+((.*:.*\n)*)/
+const ReMetaHeader = /# [Mm]etadata\s+((- .*:.*\n)*)/
+const refInfoTagName = "refInfo"
+const ReRefInfo = RegExp(`%%\\s*begin\\s*${refInfoTagName}\\s*%%([\\s\\S]*)%%\\s*end\\s*${refInfoTagName}\\s*%%`)
+const ReDoiLink = /\[(.*)\]\(.*\)/
 
 interface PaperInfo {
     file: TFile;
     doi: string;
-    year: number | null;
     refs: Array<string>; // actual paper references
     links: Array<PaperInfo>; // in vault links
-    extraMeta: Map<string, string>;
 }
 
 export default class LinkerPlugin extends Plugin {
-    settings: LinkerPluginSettings;
     statusBar: HTMLElement;
     isProcessing: boolean;
 
     async onload() {
-        await this.loadSettings();
-
         this.isProcessing = false;
         this.statusBar = this.addStatusBarItem();
 		this.statusBar.setText('');
@@ -42,36 +30,54 @@ export default class LinkerPlugin extends Plugin {
             else
                 new Notice("已经在生成中...进度可查看右下角状态栏")
         });
-
-        this.addSettingTab(new LinkerSettingTab(this.app, this));
     }
 
     onunload() {
 
     }
 
-    async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    isTargetNote(text : string) : boolean {
+        return !!text.match(ReRefInfo)
     }
 
-    async saveSettings() {
-        await this.saveData(this.settings);
+    // format like:
+    // - doi: abc/123.456
+    // - refs: xxx,aaa,yyy
+    parseListMap(text : string) : Map<string, string> {
+        let listMap = new Map<string, string>()
+        let entrys = text.trim().split("\n").map(e => e.slice(2))
+        for (let entry of entrys) {
+            let splitIndex = entry.indexOf(":")
+            let key = entry.slice(0, splitIndex).trim()
+            let value = entry.slice(splitIndex + 1).trim()
+            listMap.set(key, value)
+        }
+        return listMap
     }
 
     extractMetaData(text: string) : Map<string, string> {
         let meta = new Map<string, string>()
         let metaMatchRes = text.match(ReMetaHeader)
-        if (!metaMatchRes) return meta;
-        // TODO: if have meta header but no doi entry, try find the doi?
-
-        let entrys = metaMatchRes[1].trim().split("\n")
-        for (let entry of entrys) {
-            let splitIndex = entry.indexOf(":")
-            let key = entry.slice(0, splitIndex).trim()
-            let value = entry.slice(splitIndex + 1).trim()
-            meta.set(key, value)
+        if (metaMatchRes) {
+            // TODO: if have meta header but no doi entry, try find the doi?
+            meta = this.parseListMap(metaMatchRes[1])
         }
         return meta;
+    }
+
+    extractRefInfo(text: string) : Array<string> {
+        let metaMatchRes = text.match(ReRefInfo)
+        if (metaMatchRes) {
+            let listMap = this.parseListMap(metaMatchRes[1])
+            for (let pair of listMap) {
+                if (pair[0] == "refs") {
+                    if (pair[1]) {
+                        return pair[1].split(",").map(e => e.trim())
+                    }
+                }
+            }
+        }
+        return [];
     }
 
     async getPaperInfos() : Promise<Array<PaperInfo>> {
@@ -84,27 +90,24 @@ export default class LinkerPlugin extends Plugin {
             this.setStatusBarText(`搜索文件 ${i+1}/${files.length}`)
 
             let text = await vault.read(file);
+            if (!this.isTargetNote(text)) continue;
+
             let meta = this.extractMetaData(text)
-            if (!meta.has("doi")) continue;
+            if (!meta.has("DOI")) continue;
+            let doi = meta.get("DOI") ?? ""
 
-            let doi = meta.get("doi") ?? ""
-
-            let refs : Array<string> = []
-            if (meta.has("refs")) {
-                let refStr = meta.get("refs")?.trim()
-                if (refStr)
-                    refs = refStr?.split(",").map(s => s.trim()) ?? []
-                else
-                    refs = []
+            let matchDoiLinkRes = doi.match(ReDoiLink)
+            if (matchDoiLinkRes) {
+                doi = matchDoiLinkRes[1]
             }
+
+            let refs = this.extractRefInfo(text)
 
             let paperInfo : PaperInfo = {
                 file: file,
                 doi: doi,
-                year: null,
                 refs: refs,
-                links: [],
-                extraMeta: meta
+                links: []
             }
 
             paperInfos.push(paperInfo)
@@ -115,7 +118,6 @@ export default class LinkerPlugin extends Plugin {
 
     shouldGetRefOnInternet(paperInfo : PaperInfo) : boolean {
         if (paperInfo.refs.length == 0) return true;
-        else if (this.settings.saveYear && !paperInfo.extraMeta.has("year")) return true;
         return false;
     }
 
@@ -135,10 +137,6 @@ export default class LinkerPlugin extends Plugin {
                             if (ref.DOI && ref.DOI.trim())
                                 info.refs.push(ref.DOI.trim())
                         }
-                    }
-                    
-                    if (this.settings.saveYear && meta.message?.['published-print']?.['date-parts']?.[0]?.[0]) {
-                        info.extraMeta.set("year", meta.message['published-print']['date-parts'][0][0])
                     }
                 }
             }
@@ -169,50 +167,43 @@ export default class LinkerPlugin extends Plugin {
         }
     }
 
-    generateMetaHeader(paperInfo : PaperInfo) : string {
-        let metaHeader = "# Meta\n"
-        metaHeader += `doi: ${paperInfo.doi}\n`
-
-        if (this.settings.saveYear && paperInfo.extraMeta.has("year")) {
-            let year = paperInfo.extraMeta.get("year")
-            metaHeader += `year: ${year}\n`
-        }
-
+    generateRefInfo(paperInfo : PaperInfo) : string {
+        let metaHeader = `%% begin ${refInfoTagName} %%\n`
         if (paperInfo.refs.length > 0)
-            metaHeader += `refs: ${paperInfo.refs.join(", ")}\n`
+            metaHeader += `- refs: ${paperInfo.refs.join(", ")}\n`
         
         if (paperInfo.links.length > 0) {
             let links = paperInfo.links.map((info: PaperInfo) => {
                 return `[[${info.file.basename}]]`
             })
-            metaHeader += `links: ${links.join(" ")}\n`
+            metaHeader += `- ref links: ${links.join(" ")}\n`
         }
+        metaHeader += `%% end ${refInfoTagName} %%`
 
         return metaHeader
     }
 
-    async updateMetaHeaders(paperInfos : Array<PaperInfo>) : Promise<void> {
+    async updateRefInfo(paperInfos : Array<PaperInfo>) : Promise<void> {
         const vault = this.app.vault
         for (let info of paperInfos) {
             let text = await vault.read(info.file);
 
             // remove original meta header
-            let beforePart = "" // default append at start
-            let afterPart = text
-            let matchMetaHeader = text.match(ReMetaHeader)
-            if (matchMetaHeader) {
-                let insertIndex = matchMetaHeader.index ?? 0
-                let length = matchMetaHeader[0].length
-                beforePart = text.substring(0, insertIndex)
-                afterPart = text.substring(insertIndex + length)
+            let matchRefInfo = text.match(ReRefInfo)
+            if (!matchRefInfo) {
+                console.error("Error: Reference info block not found")
+                continue;
             }
-
+            let insertIndex = matchRefInfo.index ?? 0
+            let length = matchRefInfo[0].length
+            let beforePart = text.substring(0, insertIndex)
+            let afterPart = text.substring(insertIndex + length)
+            
             // generate new meta header
-            let metaHeader = this.generateMetaHeader(info)
-            console.log(metaHeader)
+            let refInfo = this.generateRefInfo(info)
             
             // append meta header
-            let newText = beforePart + metaHeader + afterPart
+            let newText = beforePart + refInfo + afterPart
 
             // save data
             vault.modify(info.file, newText) 
@@ -220,47 +211,25 @@ export default class LinkerPlugin extends Plugin {
     }
 
     async generateLinks() : Promise<void> {
-        console.log("start generation")
-        let paperInfos : Array<PaperInfo> = await this.getPaperInfos()
-        
-        this.setStatusBarText("生成引用...")
-        await this.calcReferences(paperInfos)
-        this.setStatusBarText("更新文件中的引用...")
-        await this.updateMetaHeaders(paperInfos)
-        this.setStatusBarText("")
+        try {
+            // console.log("start generation")
+            let paperInfos : Array<PaperInfo> = await this.getPaperInfos()
+            
+            this.setStatusBarText("生成引用...")
+            await this.calcReferences(paperInfos)
+            this.setStatusBarText("更新文件中的引用...")
+            await this.updateRefInfo(paperInfos)
+            this.setStatusBarText("")
 
-        console.log(paperInfos)
-
-        new Notice(`引用生成完成！共统计了${paperInfos.length}篇文章。`);
+            // console.log(paperInfos)
+            new Notice(`引用生成完成！共统计了「${paperInfos.length}」篇文章。`);
+        }
+        finally {
+            this.isProcessing = false
+        }
     }
 
     setStatusBarText(text : string) {
 		this.statusBar.setText(text);
-    }
-}
-
-class LinkerSettingTab extends PluginSettingTab {
-    plugin: LinkerPlugin;
-
-    constructor(app: App, plugin: LinkerPlugin) {
-        super(app, plugin);
-        this.plugin = plugin;
-    }
-
-    display(): void {
-        const {containerEl} = this;
-
-        containerEl.empty();
-
-        containerEl.createEl('h2', {text: '保存选项'});
-
-        new Setting(containerEl)
-            .setName('年份')
-            .addToggle(comp => comp
-                .setValue(this.plugin.settings.saveYear)
-                .onChange(async (value) => {
-                    this.plugin.settings.saveYear = value;
-                    await this.plugin.saveSettings();
-                }));
     }
 }
