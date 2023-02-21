@@ -1,6 +1,6 @@
 {
 	"name": "paper-reference-linker",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Generate paper links among your paper notes",
 	"main": "main.js",
 	"scripts": {
